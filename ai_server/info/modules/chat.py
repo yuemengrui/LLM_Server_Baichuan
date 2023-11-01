@@ -31,7 +31,7 @@ def llm_chat(request: Request,
                 yield json.dumps(resp, ensure_ascii=False)
             logger.info(str(resp) + '\n')
 
-        return StreamingResponse(stream_generator())
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
     else:
         resp = baichuan.lets_chat(**req.dict())

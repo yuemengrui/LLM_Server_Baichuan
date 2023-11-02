@@ -4,6 +4,7 @@ import time
 import torch
 import numpy as np
 from typing import List
+from copy import deepcopy
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.generation.utils import GenerationConfig
@@ -28,12 +29,12 @@ class BaiChuan:
         self.logger = logger
         self._load_model(model_name_or_path, device)
         self.max_length = self.model.config.model_max_length
-        self.max_prompt_length = self.max_length - self.model.generation_config.max_new_tokens
+        self.max_new_tokens = self.model.generation_config.max_new_tokens
 
         if self.logger:
             self.logger.info(str({'config': self.model.config}) + '\n')
             self.logger.info(str({'config': self.model.generation_config}) + '\n')
-            self.logger.info(str({'max_length': self.max_length, 'max_prompt_length': self.max_prompt_length}) + '\n')
+            self.logger.info(str({'max_length': self.max_length, 'max_new_tokens': self.max_new_tokens}) + '\n')
 
         # warmup
         self.lets_chat('你好', [], stream=False)
@@ -134,12 +135,24 @@ class BaiChuan:
         total_input.append(self.model.generation_config.assistant_token_id)
         return total_input
 
-    def lets_chat(self, prompt, history, stream, max_prompt_length=None, **kwargs):
+    def lets_chat(self, prompt, history, stream, generation_configs={}, **kwargs):
 
-        if max_prompt_length is None or max_prompt_length > self.max_prompt_length:
-            max_prompt_length = self.max_prompt_length
+        if not (('max_new_tokens' in generation_configs) and (
+                isinstance(generation_configs['max_new_tokens'], int)) and (
+                        128 < generation_configs['max_new_tokens'] < self.max_length)):
+            generation_configs.update({'max_new_tokens': self.max_new_tokens})
+
+        generation_config = deepcopy(self.model.generation_config)
+        generation_config.update(generation_configs)
+
+        max_prompt_length = self.max_length - generation_configs['max_new_tokens']
+
         if self.logger:
-            self.logger.info(str({'max_prompt_length': max_prompt_length}) + '\n' + str(kwargs) + '\n')
+            self.logger.info(
+                str({'max_prompt_length': max_prompt_length,
+                     'generation_configs': generation_configs,
+                     'genetation_config': generation_config}) + '\n' + str(
+                    kwargs) + '\n')
 
         history = self.select_history(prompt, history, max_prompt_length)
 
@@ -162,7 +175,7 @@ class BaiChuan:
 
             def stream_generator():
                 start = time.time()
-                for resp in self.model.chat(self.tokenizer, messages, stream=True, **kwargs):
+                for resp in self.model.chat(self.tokenizer, messages, generation_config, stream=True, **kwargs):
                     generation_tokens = len(self.tokenizer.encode(resp))
                     time_cost = time.time() - start
                     average_speed = f"{generation_tokens / time_cost:.3f} token/s"
@@ -179,7 +192,7 @@ class BaiChuan:
 
         else:
             start = time.time()
-            resp = self.model.chat(self.tokenizer, messages, **kwargs)
+            resp = self.model.chat(self.tokenizer, messages, generation_config, **kwargs)
             generation_tokens = len(self.tokenizer.encode(resp))
             time_cost = time.time() - start
             average_speed = f"{generation_tokens / time_cost:.3f} token/s"
@@ -194,88 +207,88 @@ class BaiChuan:
                     "usage": {"prompt_tokens": prompt_tokens, "generation_tokens": generation_tokens,
                               "total_tokens": prompt_tokens + generation_tokens, "average_speed": average_speed}}
 
-    def lets_batch_chat(self, prompt_list, history_list, stream, max_prompt_length=None, **kwargs):
-        if max_prompt_length is None or max_prompt_length > self.max_prompt_length:
-            max_prompt_length = self.max_prompt_length
-        if self.logger:
-            self.logger.info(str({'max_prompt_length': max_prompt_length}) + '\n' + str(kwargs) + '\n')
-
-        batch_inputs = []
-        batch_prompt_tokens = []
-        batch_history_list = []
-        for i in range(len(prompt_list)):
-            history = self.select_history(prompt_list[i], history_list[i], max_prompt_length)
-            batch_history_list.append(history)
-            batch_history_list[-1].append([prompt_list[i], ""])
-
-            messages = []
-            for his in history:
-                messages.append({'role': 'user', 'content': his[0]})
-                messages.append({'role': 'assistant', 'content': his[1]})
-
-            messages.append({'role': 'user', 'content': prompt_list[i]})
-
-            input_prompt = self._build_chat_input(messages)
-            prompt_tokens = len(input_prompt)
-            input_prompt_str = self.tokenizer.decode(input_prompt)
-            if self.logger:
-                self.logger.info(str({'prompt_tokens': prompt_tokens, 'prompt_str_len': len(input_prompt_str),
-                                      'prompt': input_prompt_str}) + '\n')
-
-            batch_prompt_tokens.append(prompt_tokens)
-            batch_inputs.append(np.array(input_prompt))
-
-        max_length = max([len(x) for x in batch_inputs])
-        # left padding
-        batch_inputs = np.array([np.pad(t, (max_length - t.shape[0], 0), 'constant',
-                                        constant_values=self.model.generation_config.pad_token_id) for t in
-                                 batch_inputs])
-        # right padding
-        # batch_inputs = np.array([np.pad(t, (0, max_length - t.shape[0]), 'constant',
-        #                                 constant_values=self.model.generation_config.pad_token_id) for t in
-        #                          batch_inputs])
-
-        batch_inputs = torch.LongTensor(batch_inputs).to(self.device)
-        batch_len = len(prompt_list)
-        if stream:
-
-            def stream_generator():
-                start = time.time()
-                for resp_list in self.model.batch_chat(self.tokenizer, batch_inputs, self.model.generation_config,
-                                                       stream=True, **kwargs):
-                    outputs = []
-                    for i in range(batch_len):
-                        generation_tokens = len(self.tokenizer.encode(resp_list[i]))
-                        average_speed = f"{generation_tokens / (time.time() - start):.3f} token/s"
-                        batch_history_list[i][-1][-1] = resp_list[i]
-
-                        outputs.append(
-                            {"model_name": self.model_name, "answer": resp_list[i], "history": batch_history_list[i],
-                             "usage": {"prompt_tokens": batch_prompt_tokens[i],
-                                       "generation_tokens": generation_tokens,
-                                       "total_tokens": batch_prompt_tokens[i] + generation_tokens,
-                                       "average_speed": average_speed}})
-
-                    torch_gc(self.device)
-                    yield outputs
-
-            return stream_generator()
-
-        else:
-            start = time.time()
-            resp_list = self.model.batch_chat(self.tokenizer, batch_inputs, self.model.generation_config, **kwargs)
-            outputs = []
-            for i in range(batch_len):
-                generation_tokens = len(self.tokenizer.encode(resp_list[i]))
-                average_speed = f"{generation_tokens / (time.time() - start):.3f} token/s"
-                batch_history_list[i][-1][-1] = resp_list[i]
-
-                outputs.append({"model_name": self.model_name, "answer": resp_list[i], "history": batch_history_list[i],
-                                "usage": {"prompt_tokens": batch_prompt_tokens[i],
-                                          "generation_tokens": generation_tokens,
-                                          "total_tokens": batch_prompt_tokens[i] + generation_tokens,
-                                          "average_speed": average_speed}})
-
-            torch_gc(self.device)
-
-            return outputs
+    # def lets_batch_chat(self, prompt_list, history_list, stream, max_prompt_length=None, **kwargs):
+    #     if max_prompt_length is None or max_prompt_length > self.max_prompt_length:
+    #         max_prompt_length = self.max_prompt_length
+    #     if self.logger:
+    #         self.logger.info(str({'max_prompt_length': max_prompt_length}) + '\n' + str(kwargs) + '\n')
+    #
+    #     batch_inputs = []
+    #     batch_prompt_tokens = []
+    #     batch_history_list = []
+    #     for i in range(len(prompt_list)):
+    #         history = self.select_history(prompt_list[i], history_list[i], max_prompt_length)
+    #         batch_history_list.append(history)
+    #         batch_history_list[-1].append([prompt_list[i], ""])
+    #
+    #         messages = []
+    #         for his in history:
+    #             messages.append({'role': 'user', 'content': his[0]})
+    #             messages.append({'role': 'assistant', 'content': his[1]})
+    #
+    #         messages.append({'role': 'user', 'content': prompt_list[i]})
+    #
+    #         input_prompt = self._build_chat_input(messages)
+    #         prompt_tokens = len(input_prompt)
+    #         input_prompt_str = self.tokenizer.decode(input_prompt)
+    #         if self.logger:
+    #             self.logger.info(str({'prompt_tokens': prompt_tokens, 'prompt_str_len': len(input_prompt_str),
+    #                                   'prompt': input_prompt_str}) + '\n')
+    #
+    #         batch_prompt_tokens.append(prompt_tokens)
+    #         batch_inputs.append(np.array(input_prompt))
+    #
+    #     max_length = max([len(x) for x in batch_inputs])
+    #     # left padding
+    #     batch_inputs = np.array([np.pad(t, (max_length - t.shape[0], 0), 'constant',
+    #                                     constant_values=self.model.generation_config.pad_token_id) for t in
+    #                              batch_inputs])
+    #     # right padding
+    #     # batch_inputs = np.array([np.pad(t, (0, max_length - t.shape[0]), 'constant',
+    #     #                                 constant_values=self.model.generation_config.pad_token_id) for t in
+    #     #                          batch_inputs])
+    #
+    #     batch_inputs = torch.LongTensor(batch_inputs).to(self.device)
+    #     batch_len = len(prompt_list)
+    #     if stream:
+    #
+    #         def stream_generator():
+    #             start = time.time()
+    #             for resp_list in self.model.batch_chat(self.tokenizer, batch_inputs, self.model.generation_config,
+    #                                                    stream=True, **kwargs):
+    #                 outputs = []
+    #                 for i in range(batch_len):
+    #                     generation_tokens = len(self.tokenizer.encode(resp_list[i]))
+    #                     average_speed = f"{generation_tokens / (time.time() - start):.3f} token/s"
+    #                     batch_history_list[i][-1][-1] = resp_list[i]
+    #
+    #                     outputs.append(
+    #                         {"model_name": self.model_name, "answer": resp_list[i], "history": batch_history_list[i],
+    #                          "usage": {"prompt_tokens": batch_prompt_tokens[i],
+    #                                    "generation_tokens": generation_tokens,
+    #                                    "total_tokens": batch_prompt_tokens[i] + generation_tokens,
+    #                                    "average_speed": average_speed}})
+    #
+    #                 torch_gc(self.device)
+    #                 yield outputs
+    #
+    #         return stream_generator()
+    #
+    #     else:
+    #         start = time.time()
+    #         resp_list = self.model.batch_chat(self.tokenizer, batch_inputs, self.model.generation_config, **kwargs)
+    #         outputs = []
+    #         for i in range(batch_len):
+    #             generation_tokens = len(self.tokenizer.encode(resp_list[i]))
+    #             average_speed = f"{generation_tokens / (time.time() - start):.3f} token/s"
+    #             batch_history_list[i][-1][-1] = resp_list[i]
+    #
+    #             outputs.append({"model_name": self.model_name, "answer": resp_list[i], "history": batch_history_list[i],
+    #                             "usage": {"prompt_tokens": batch_prompt_tokens[i],
+    #                                       "generation_tokens": generation_tokens,
+    #                                       "total_tokens": batch_prompt_tokens[i] + generation_tokens,
+    #                                       "average_speed": average_speed}})
+    #
+    #         torch_gc(self.device)
+    #
+    #         return outputs

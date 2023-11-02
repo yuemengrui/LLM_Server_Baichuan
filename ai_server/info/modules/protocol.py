@@ -10,16 +10,10 @@ class ErrorResponse(BaseModel):
     errmsg: str
 
 
-class GenerationConfigs(BaseModel):
-    max_new_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float]
-
-
 class ChatRequest(BaseModel):
     prompt: str
     history: List = Field(default=[], description="历史记录")
-    generation_configs: Dict[GenerationConfigs]
+    generation_configs: Dict = Field(default={})
     stream: bool = Field(default=True, description="是否流式输出")
 
 

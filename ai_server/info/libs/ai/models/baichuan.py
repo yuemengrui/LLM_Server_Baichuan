@@ -143,7 +143,7 @@ class BaiChuan:
             generation_configs.update({'max_new_tokens': self.max_new_tokens})
 
         generation_config = deepcopy(self.model.generation_config)
-        generation_config.update(generation_configs)
+        generation_config.update(**generation_configs)
 
         max_prompt_length = self.max_length - generation_configs['max_new_tokens']
 
@@ -175,7 +175,11 @@ class BaiChuan:
 
             def stream_generator():
                 start = time.time()
-                for resp in self.model.chat(self.tokenizer, messages, generation_config, stream=True, **kwargs):
+                for resp in self.model.chat(tokenizer=self.tokenizer,
+                                            messages=messages,
+                                            stream=True,
+                                            generation_config=generation_config,
+                                            **kwargs):
                     generation_tokens = len(self.tokenizer.encode(resp))
                     time_cost = time.time() - start
                     average_speed = f"{generation_tokens / time_cost:.3f} token/s"
@@ -192,7 +196,11 @@ class BaiChuan:
 
         else:
             start = time.time()
-            resp = self.model.chat(self.tokenizer, messages, generation_config, **kwargs)
+            resp = self.model.chat(tokenizer=self.tokenizer,
+                                   messages=messages,
+                                   stream=False,
+                                   generation_config=generation_config,
+                                   **kwargs)
             generation_tokens = len(self.tokenizer.encode(resp))
             time_cost = time.time() - start
             average_speed = f"{generation_tokens / time_cost:.3f} token/s"

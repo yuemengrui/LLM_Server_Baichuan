@@ -24,7 +24,7 @@ def llm_chat(request: Request,
         if req.stream:
             def stream_generator():
                 yield json.dumps({"model_name": baichuan.model_name,
-                                  "answer": "token overflow error! 当前prompt token:{} 支持的最大token:{}".format(
+                                  "answer": "token长度超过限制! 当前prompt token:{} 支持的最大token:{}".format(
                                       token_counter_resp[1], token_counter_resp[2]),
                                   "time_cost": {"generation": "0s"},
                                   "usage": {"prompt_tokens": token_counter_resp[1], "generation_tokens": 0,

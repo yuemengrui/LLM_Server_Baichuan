@@ -13,8 +13,10 @@ from fastapi.openapi.docs import (
 )
 from fastapi.staticfiles import StaticFiles
 from info.libs.ai.models.baichuan import BaiChuan
+from info.utils.model_register import register_model_to_server
 
 baichuan = BaiChuan(logger=logger, **BAICHUAN_CONFIG)
+register_model_to_server(BAICHUAN_CONFIG['model_name'])
 limiter = Limiter(key_func=lambda *args, **kwargs: '127.0.0.1')
 
 

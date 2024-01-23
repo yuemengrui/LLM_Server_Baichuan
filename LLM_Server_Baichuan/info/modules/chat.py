@@ -49,6 +49,7 @@ def llm_chat(request: Request,
 
     else:
         resp = baichuan.lets_chat(**req.dict())
+        logger.info(str(resp) + '\n')
         return JSONResponse(resp)
 
 
